@@ -16,7 +16,11 @@ use OCP\Migration\ISqlMigration;
  */
 class Version20170202213905 implements ISqlMigration {
 
+	/** @var IUserManager */
 	private $userManager;
+
+	/** @var string[]  */
+	private $statements = [];
 
 	public function __construct(IUserManager $userManager) {
 		$this->userManager = $userManager;
@@ -24,7 +28,7 @@ class Version20170202213905 implements ISqlMigration {
 
 	/**
 	 * @param IDBConnection $connection
-	 * @return null
+	 * @return array
 	 */
 	public function sql(IDBConnection $connection) {
 		$qb = $connection->getQueryBuilder();
@@ -36,7 +40,7 @@ class Version20170202213905 implements ISqlMigration {
 
 		// There is nothing to do if table is empty or has no userid field
 		if (!$row || !isset($row['userid'])) {
-			return;
+			return $this->statements;
 		}
 
 		$qb->select('userid', 'propertypath')
@@ -49,38 +53,43 @@ class Version20170202213905 implements ISqlMigration {
 
 		while ($row = $selectResult->fetch()) {
 			try {
-				$this->repairEntry($qb, $row);
+				$sql = $this->getRepairEntrySql($qb, $row);
+				if (!is_null($sql)) {
+					$this->statements[] = $sql;
+				}
 			} catch (\Exception $e) {
 				// do nothing
 			}
 		}
 
 		// drop entries with empty fileid
-		$qb->delete('properties')
+		$dropQuery = $qb->delete('properties')
 			->where(
 				$qb->expr()->eq('fileid', $qb->expr()->literal('0'))
 			)
 			->orWhere(
 				$qb->expr()->isNull('fileid')
 			);
-		$rowsDeleted = $qb->execute();
+		$this->statements[] = $dropQuery->getSQL();
+		return $this->statements;
 	}
 
 	/**
 	 * @param IQueryBuilder $qb
 	 * @param $entry
+	 * @return string|null
 	 */
-	private function repairEntry(IQueryBuilder $qb, $entry) {
+	private function getRepairEntrySql(IQueryBuilder $qb, $entry) {
 		$userId = $entry['userid'];
 		$user = $this->userManager->get($userId);
 		if (!($user instanceof IUser)) {
-			return;
+			return null;
 		}
 
 		$node = \OC::$server->getUserFolder($userId)->get($entry['propertypath']);
-		if ($node instanceof Node) {
+		if ($node instanceof Node && $node->getId()) {
 			$fileId = $node->getId();
-			$qb->update('properties')
+			$updateQuery = $qb->update('properties')
 				->set('fileid', $fileId)
 				->where(
 					$qb->expr()->eq('userid', $userId)
@@ -88,7 +97,8 @@ class Version20170202213905 implements ISqlMigration {
 				->andWhere(
 					$qb->expr()->eq('propertypath', $entry['propertypath'])
 				);
-			$qb->execute();
+			return $updateQuery->getSQL();
 		}
+		return null;
 	}
 }
